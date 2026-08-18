@@ -1,0 +1,9 @@
+# Created by Tanzim Nasir
+# Copyright (c) 2026 Tanzim Nasir.
+# Built for Elite Integrity Services.
+# Unauthorized use by other companies is prohibited.
+__all__ = ["APP_DISPLAY_NAME", "APP_RELEASE_DATE", "__version__"]
+
+APP_DISPLAY_NAME = "Elite Cover Suite"
+__version__ = "1.11"
+APP_RELEASE_DATE = "August 18, 2026"
