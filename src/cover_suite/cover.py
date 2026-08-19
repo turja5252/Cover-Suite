@@ -389,6 +389,47 @@ def compose_cover_preview(
     return out
 
 
+def compose_full_cover_preview(
+    info: CoverInfo,
+    *,
+    width: int = 320,
+    height: int = 440,
+) -> Image.Image | None:
+    """Rasterize the real letter cover — frame, photo, text, and branding — into a pane."""
+    try:
+        import pymupdf
+    except ImportError:
+        return None
+    width = max(1, int(width))
+    height = max(1, int(height))
+    try:
+        pdf_bytes = render_cover_pdf(info)
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return None
+    try:
+        if doc.page_count < 1:
+            return None
+        page = doc[0]
+        page_w = max(1.0, float(page.rect.width))
+        page_h = max(1.0, float(page.rect.height))
+        fit = min(width / page_w, height / page_h)
+        out_w = max(1, int(round(page_w * fit)))
+        out_h = max(1, int(round(page_h * fit)))
+        render_scale = max(fit * 1.6, 1.0)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(render_scale, render_scale), alpha=False)
+        page_image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    except Exception:
+        return None
+    finally:
+        doc.close()
+    if page_image.size != (out_w, out_h):
+        page_image = page_image.resize((out_w, out_h), Image.Resampling.LANCZOS)
+    out = Image.new("RGBA", (width, height), (5, 4, 3, 255))
+    out.paste(page_image.convert("RGBA"), ((width - out_w) // 2, (height - out_h) // 2))
+    return out
+
+
 def _cover_lines_fitted(lines: list[str], font: str, size: float, max_width: float) -> list[str]:
     fitted: list[str] = []
     for line in lines:

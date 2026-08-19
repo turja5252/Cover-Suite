@@ -21,6 +21,7 @@ from cover_suite.cover import (
     COVER_FONT_HELVETICA,
     CoverInfo,
     compose_cover_preview,
+    compose_full_cover_preview,
     cover_pdf_name,
     cover_source_page_count,
     is_cover_pdf,
@@ -85,6 +86,7 @@ class CoverGui:
         self._photo_page = 1
         self._photo_drag: tuple[float, float, float, float] | None = None
         self._preview_after: str | None = None
+        self.preview_mode_var = tk.StringVar(value="photo")
         env_out = os.environ.get("ELITE_COVER_OUTPUT", "").strip()
         env_job = os.environ.get("ELITE_COVER_JOB", "").strip()
         self._locked_output = (str(output_dir).strip() if output_dir else "") or env_out
@@ -307,7 +309,7 @@ class CoverGui:
                 text=label,
                 variable=self.book_font_var,
                 value=value,
-                command=lambda: self._save_settings(),
+                command=self._on_font_changed,
                 bg=PANEL,
                 fg=TEXT,
                 selectcolor=ENTRY,
@@ -361,6 +363,8 @@ class CoverGui:
             frame.pack(fill="x", padx=14, pady=(0, 8))
             tk.Label(frame, text=label, font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL, anchor="w").pack(fill="x")
             self._entry(frame, self.field_vars[name], fill="x", ipady=5)
+        for var in self.field_vars.values():
+            var.trace_add("write", lambda *_args: self._schedule_photo_preview())
         self.custom_block = tk.Frame(self.text_body, bg=PANEL)
         custom_bar = tk.Frame(self.custom_block, bg=PANEL)
         custom_bar.pack(fill="x", padx=14, pady=(0, 6))
@@ -393,6 +397,7 @@ class CoverGui:
         )
         self.custom_text.pack(fill="both", expand=True)
         self.custom_text.bind("<FocusOut>", lambda _e: self._save_settings())
+        self.custom_text.bind("<KeyRelease>", lambda _e: self._schedule_photo_preview())
         job_row = tk.Frame(self.custom_block, bg=PANEL)
         job_row.pack(fill="x", padx=14, pady=(0, 8))
         tk.Label(
@@ -409,13 +414,31 @@ class CoverGui:
     def _build_photo_panel(self, parent: tk.Frame) -> None:
         tk.Label(
             parent,
-            text="Cover photo",
+            text="Cover preview",
             font=("Segoe UI Semibold", 12),
             fg=TEXT,
             bg=PANEL,
             anchor="w",
         ).pack(fill="x", padx=14, pady=(12, 0))
-        tk.Label(
+        mode_row = tk.Frame(parent, bg=PANEL)
+        mode_row.pack(fill="x", padx=10, pady=(6, 0))
+        for value, label in (("photo", "Photo crop"), ("page", "Full page")):
+            tk.Radiobutton(
+                mode_row,
+                text=label,
+                variable=self.preview_mode_var,
+                value=value,
+                command=self._on_preview_mode_changed,
+                bg=PANEL,
+                fg=TEXT,
+                selectcolor=ENTRY,
+                activebackground=PANEL,
+                activeforeground=TEXT,
+                font=("Segoe UI Semibold", 9),
+                highlightthickness=0,
+                bd=0,
+            ).pack(side="left", padx=(4, 10))
+        self.preview_hint = tk.Label(
             parent,
             text="Preview is the real cover cutout - not a full circle. Drag to pan, scroll or use the slider to zoom, Rotate 90 to turn it. A PDF uses the chosen page the same way as a photo.",
             font=("Segoe UI", 8),
@@ -424,7 +447,8 @@ class CoverGui:
             anchor="w",
             wraplength=280,
             justify="left",
-        ).pack(fill="x", padx=14, pady=(2, 8))
+        )
+        self.preview_hint.pack(fill="x", padx=14, pady=(2, 8))
         self._path_row(parent, "Photo or PDF", self.photo_var, self._browse_photo, side="bottom")
         zoom_row = tk.Frame(parent, bg=PANEL)
         zoom_row.pack(side="bottom", fill="x", padx=14, pady=(0, 4))
@@ -558,6 +582,7 @@ class CoverGui:
         self.custom_text.delete("1.0", "end")
         self.custom_text.insert("1.0", "\n".join(info.lines()))
         self._save_settings()
+        self._schedule_photo_preview()
         if log:
             self._log("Copied the standard field lines into custom text.")
 
@@ -579,6 +604,7 @@ class CoverGui:
             )
         if persist:
             self._save_settings()
+        self._schedule_photo_preview()
 
     def _load_settings(self) -> None:
         path = default_settings_path()
@@ -619,7 +645,10 @@ class CoverGui:
             self.custom_text.insert("1.0", custom_text)
         if data.get("font"):
             self.book_font_var.set(normalize_cover_font(data.get("font")))
+        if data.get("preview_mode") == "page":
+            self.preview_mode_var.set("page")
         self._sync_pdf_page_chrome()
+        self._apply_preview_mode_chrome()
 
     def _save_settings(self) -> None:
         path = default_settings_path()
@@ -634,8 +663,37 @@ class CoverGui:
             "text_mode": self.text_mode_var.get().strip() or "standard",
             "custom_text": self._custom_text_value(),
             "font": normalize_cover_font(self.book_font_var.get()),
+            "preview_mode": self.preview_mode_var.get().strip() or "photo",
         }
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _on_font_changed(self) -> None:
+        self._save_settings()
+        self._schedule_photo_preview()
+
+    def _preview_is_photo(self) -> bool:
+        return self.preview_mode_var.get() != "page"
+
+    def _apply_preview_mode_chrome(self) -> None:
+        canvas = getattr(self, "photo_canvas", None)
+        if canvas is not None:
+            canvas.configure(cursor="fleur" if self._preview_is_photo() else "")
+        hint = getattr(self, "preview_hint", None)
+        if hint is None:
+            return
+        if self._preview_is_photo():
+            hint.configure(
+                text="Preview is the real cover cutout - not a full circle. Drag to pan, scroll or use the slider to zoom, Rotate 90 to turn it. A PDF uses the chosen page the same way as a photo."
+            )
+        else:
+            hint.configure(
+                text="Letter page as it will print - text, branding, and photo. Switch to Photo crop to pan and zoom the circle."
+            )
+
+    def _on_preview_mode_changed(self) -> None:
+        self._apply_preview_mode_chrome()
+        self._refresh_photo_preview()
+        self._save_settings()
 
     def _browse_output(self) -> None:
         if self._locked_output:
@@ -754,10 +812,12 @@ class CoverGui:
             return
 
     def _on_photo_press(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        if not self._preview_is_photo():
+            return
         self._photo_drag = (event.x, event.y, self._photo_pan_x, self._photo_pan_y)
 
     def _on_photo_drag(self, event: tk.Event) -> None:  # type: ignore[type-arg]
-        if self._photo_drag is None:
+        if self._photo_drag is None or not self._preview_is_photo():
             return
         start_x, start_y, pan_x, pan_y = self._photo_drag
         canvas = self.photo_canvas
@@ -771,6 +831,8 @@ class CoverGui:
         self._save_settings()
 
     def _on_photo_wheel(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        if not self._preview_is_photo():
+            return
         if getattr(event, "num", None) == 4 or (getattr(event, "delta", 0) or 0) > 0:
             steps = 1
         elif getattr(event, "num", None) == 5 or (getattr(event, "delta", 0) or 0) < 0:
@@ -786,7 +848,8 @@ class CoverGui:
                 self.root.after_cancel(self._preview_after)
             except tk.TclError:
                 pass
-        self._preview_after = self.root.after(20, self._refresh_photo_preview)
+        delay = 90 if not self._preview_is_photo() else 20
+        self._preview_after = self.root.after(delay, self._refresh_photo_preview)
 
     def _refresh_photo_preview(self) -> None:
         self._preview_after = None
@@ -796,20 +859,23 @@ class CoverGui:
         canvas.delete("all")
         width = max(int(canvas.winfo_width()), 120)
         height = max(int(canvas.winfo_height()), 120)
-        photo_text = self.photo_var.get().strip()
-        source = Path(photo_text) if photo_text else cover_asset("elite_cover_photo.jpg")
-        if not source.is_file():
-            source = cover_asset("elite_cover_photo.jpg")
-        composed = compose_cover_preview(
-            source,
-            zoom=self._photo_zoom,
-            pan_x=self._photo_pan_x,
-            pan_y=self._photo_pan_y,
-            rotation=self._photo_rotation,
-            page=self._photo_page,
-            width=width,
-            height=height,
-        )
+        if not self._preview_is_photo():
+            composed = compose_full_cover_preview(self._current_info(), width=width, height=height)
+        else:
+            photo_text = self.photo_var.get().strip()
+            source = Path(photo_text) if photo_text else cover_asset("elite_cover_photo.jpg")
+            if not source.is_file():
+                source = cover_asset("elite_cover_photo.jpg")
+            composed = compose_cover_preview(
+                source,
+                zoom=self._photo_zoom,
+                pan_x=self._photo_pan_x,
+                pan_y=self._photo_pan_y,
+                rotation=self._photo_rotation,
+                page=self._photo_page,
+                width=width,
+                height=height,
+            )
         if composed is None:
             canvas.create_text(width / 2, height / 2, text="Could not build preview", fill=MUTED, font=("Segoe UI", 9))
             return

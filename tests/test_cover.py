@@ -16,6 +16,7 @@ from cover_suite.cover import (
     _register_cover_font,
     _text_first_baseline,
     compose_cover_preview,
+    compose_full_cover_preview,
     cover_pdf_name,
     cover_photo_region,
     cover_source_page_count,
@@ -146,6 +147,29 @@ def test_compose_cover_preview_matches_cutout_size() -> None:
     shifted = compose_cover_preview(photo, zoom=1.5, pan_x=-0.8, pan_y=0.4, width=220, height=260)
     assert shifted is not None
     assert preview.tobytes() != shifted.tobytes()
+
+
+def test_compose_full_cover_preview_is_letter_page() -> None:
+    photo = cover_asset("elite_cover_photo.jpg")
+    info = CoverInfo(
+        client="Cenovus",
+        description="20'-0\" Dia x 40'-0\" High",
+        location="Lloydminster, AB",
+        tag="52-T-001",
+        job_number="2026-031-1",
+        revision="0",
+        photo_path=str(photo),
+    )
+    preview = compose_full_cover_preview(info, width=200, height=280)
+    assert preview is not None
+    assert preview.size == (200, 280)
+    other = compose_full_cover_preview(
+        CoverInfo(client="Different Client", job_number="2026-099-1", photo_path=str(photo)),
+        width=200,
+        height=280,
+    )
+    assert other is not None
+    assert preview.tobytes() != other.tobytes()
 
 
 def _write_color_pdf(path: Path, colors: list[tuple[int, int, int]]) -> None:
