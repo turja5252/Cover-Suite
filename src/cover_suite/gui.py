@@ -32,6 +32,15 @@ from cover_suite.cover import (
 )
 from cover_suite.handoff import write_cover_handoff
 from cover_suite.paths import cover_asset, default_settings_path
+from cover_suite.project_inputs import (
+    fields_from_env,
+    load_cover_fields,
+    load_cover_inputs,
+    overlay_nonempty,
+    save_cover_inputs,
+)
+from cover_suite.suite_folders import last_engine_suite_output, picker_start_dir
+from cover_suite.ui_scale import install_ui_scaling, pack_font_size_toggle
 from cover_suite.widgets import styled_button
 
 BACKGROUND = "#100e08"
@@ -65,6 +74,7 @@ class CoverGui:
         fields: dict[str, str] | None = None,
     ) -> None:
         self.root = tk.Tk()
+        install_ui_scaling(self.root)
         self.root.title(f"{APP_DISPLAY_NAME} {__version__}")
         self.root.configure(bg=BACKGROUND)
         self._apply_startup_geometry()
@@ -92,22 +102,13 @@ class CoverGui:
         self._locked_output = (str(output_dir).strip() if output_dir else "") or env_out
         self._locked_job = (str(job_number).strip() if job_number else "") or env_job
         self._tab_title = str((fields or {}).get("tab_title") or os.environ.get("ELITE_COVER_TAB", "")).strip()
+        self._settings_output = ""
 
         self._build_layout()
         self._load_settings()
         if self._locked_output:
             self.output_var.set(self._locked_output)
-        incoming = dict(fields or {})
-        if self._locked_job:
-            incoming["job_number"] = self._locked_job
-        for name, value in incoming.items():
-            if name in self.field_vars and str(value).strip():
-                self.field_vars[name].set(str(value).strip())
-        incoming_font = str(
-            incoming.get("font") or os.environ.get("ELITE_COVER_FONT", "")
-        ).strip()
-        if incoming_font:
-            self.book_font_var.set(normalize_cover_font(incoming_font))
+        self._apply_project_inputs(fields)
         if not self.photo_var.get().strip():
             self.photo_var.set(str(cover_asset("elite_cover_photo.jpg")))
         self._sync_pdf_page_chrome()
@@ -117,17 +118,17 @@ class CoverGui:
         self._log("Welcome. Use standard fields or custom text, swap the photo if needed, then Generate Cover.")
         if self._locked_output:
             self._log(f"Output folder is the Databook folder:\n{self._locked_output}")
-        if self._locked_job:
-            self._log(f"Job number is the Databook job: {self._locked_job}")
+        if self.field_vars["job_number"].get().strip():
+            self._log(f"Job number is the Databook job: {self.field_vars['job_number'].get().strip()}")
 
     def _apply_startup_geometry(self) -> None:
         self.root.update_idletasks()
         screen_w = max(self.root.winfo_screenwidth(), 1024)
         screen_h = max(self.root.winfo_screenheight(), 720)
-        width = min(980, max(860, screen_w - 140))
-        height = min(760, max(640, screen_h - 140))
+        width = min(1100, max(920, screen_w - 100))
+        height = min(820, max(680, screen_h - 100))
         self.root.geometry(f"{width}x{height}")
-        self.root.minsize(820, 600)
+        self.root.minsize(880, 640)
 
     def _inset_panel(
         self,
@@ -244,6 +245,16 @@ class CoverGui:
         tk.Label(version_pill, text=APP_RELEASE_DATE, font=("Consolas", 8), fg=LCD_DIM, bg=LCD_BG).pack(
             side="left", padx=(0, 10), pady=4
         )
+        pack_font_size_toggle(
+            title_row,
+            bg=BACKGROUND,
+            fg=TEXT,
+            muted=MUTED,
+            selectcolor=ENTRY,
+            on_change=lambda mode: self._log(
+                "Large text on." if mode == "large" else "Normal text size."
+            ),
+        )
         tk.Label(
             hero,
             text="Draw the Elite cover in-engine, then import it to Databook as [COVER].",
@@ -270,8 +281,8 @@ class CoverGui:
 
         body = tk.Frame(main, bg=BACKGROUND)
         body.pack(fill="both", expand=True, padx=28, pady=(0, 8))
-        body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2)
+        body.grid_columnconfigure(0, weight=2)
+        body.grid_columnconfigure(1, weight=3)
         body.grid_rowconfigure(0, weight=1)
 
         left_shell = tk.Frame(body, bg=ACCENT_DIM, highlightthickness=0)
@@ -362,7 +373,8 @@ class CoverGui:
             frame = tk.Frame(self.fields_block, bg=PANEL)
             frame.pack(fill="x", padx=14, pady=(0, 8))
             tk.Label(frame, text=label, font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL, anchor="w").pack(fill="x")
-            self._entry(frame, self.field_vars[name], fill="x", ipady=5)
+            entry = self._entry(frame, self.field_vars[name], fill="x", ipady=5)
+            entry.bind("<FocusOut>", lambda _e: self._save_settings())
         for var in self.field_vars.values():
             var.trace_add("write", lambda *_args: self._schedule_photo_preview())
         self.custom_block = tk.Frame(self.text_body, bg=PANEL)
@@ -408,23 +420,24 @@ class CoverGui:
             bg=PANEL,
             anchor="w",
         ).pack(fill="x")
-        self._entry(job_row, self.field_vars["job_number"], fill="x", ipady=5)
+        job_entry = self._entry(job_row, self.field_vars["job_number"], fill="x", ipady=5)
+        job_entry.bind("<FocusOut>", lambda _e: self._save_settings())
         self.fields_block.pack(fill="x")
 
     def _build_photo_panel(self, parent: tk.Frame) -> None:
+        header = tk.Frame(parent, bg=PANEL)
+        header.pack(fill="x", padx=10, pady=(8, 2))
         tk.Label(
-            parent,
+            header,
             text="Cover preview",
             font=("Segoe UI Semibold", 12),
             fg=TEXT,
             bg=PANEL,
             anchor="w",
-        ).pack(fill="x", padx=14, pady=(12, 0))
-        mode_row = tk.Frame(parent, bg=PANEL)
-        mode_row.pack(fill="x", padx=10, pady=(6, 0))
+        ).pack(side="left", padx=(4, 12))
         for value, label in (("photo", "Photo crop"), ("page", "Full page")):
             tk.Radiobutton(
-                mode_row,
+                header,
                 text=label,
                 variable=self.preview_mode_var,
                 value=value,
@@ -437,24 +450,38 @@ class CoverGui:
                 font=("Segoe UI Semibold", 9),
                 highlightthickness=0,
                 bd=0,
-            ).pack(side="left", padx=(4, 10))
-        self.preview_hint = tk.Label(
+            ).pack(side="left", padx=(0, 8))
+        self._path_row(
             parent,
-            text="Preview is the real cover cutout - not a full circle. Drag to pan, scroll or use the slider to zoom, Rotate 90 to turn it. A PDF uses the chosen page the same way as a photo.",
-            font=("Segoe UI", 8),
-            fg=MUTED,
-            bg=PANEL,
-            anchor="w",
-            wraplength=280,
-            justify="left",
+            "Photo or PDF",
+            self.photo_var,
+            self._browse_photo,
+            side="bottom",
+            padx=10,
+            pady=(4, 8),
+            inline=True,
         )
-        self.preview_hint.pack(fill="x", padx=14, pady=(2, 8))
-        self._path_row(parent, "Photo or PDF", self.photo_var, self._browse_photo, side="bottom")
-        zoom_row = tk.Frame(parent, bg=PANEL)
-        zoom_row.pack(side="bottom", fill="x", padx=14, pady=(0, 4))
-        tk.Label(zoom_row, text="Zoom", font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL).pack(side="left")
+        tools = tk.Frame(parent, bg=PANEL)
+        tools.pack(side="bottom", fill="x", padx=10, pady=(0, 4))
+        self._secondary_button(tools, "Rotate 90°", self._rotate_photo).pack(side="left")
+        self.rotation_label = tk.Label(
+            tools, text="0°", font=("Consolas", 9), fg=LCD_FG, bg=PANEL, width=4, anchor="w"
+        )
+        self.rotation_label.pack(side="left", padx=(6, 8))
+        self.pdf_page_row = tk.Frame(tools, bg=PANEL)
+        self._secondary_button(self.pdf_page_row, "◀", self._pdf_page_prev).pack(side="left")
+        self.pdf_page_label = tk.Label(
+            self.pdf_page_row, text="Page 1 / 1", font=("Consolas", 9), fg=LCD_FG, bg=PANEL, anchor="w"
+        )
+        self.pdf_page_label.pack(side="left", padx=6)
+        self._secondary_button(self.pdf_page_row, "▶", self._pdf_page_next).pack(side="left")
+        self.zoom_label = tk.Label(
+            tools, text="100%", font=("Consolas", 9), fg=LCD_FG, bg=PANEL, width=5, anchor="e"
+        )
+        self.zoom_label.pack(side="right")
+        tk.Label(tools, text="Zoom", font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL).pack(side="left")
         self.zoom_var = tk.DoubleVar(value=100.0)
-        zoom_shell, zoom_face = self._inset_panel(zoom_row, fill="x", expand=True, autoplace=False, face=ENTRY)
+        zoom_shell, zoom_face = self._inset_panel(tools, fill="x", expand=True, autoplace=False, face=ENTRY)
         zoom_shell.pack(side="left", fill="x", expand=True, padx=(8, 8))
         self.zoom_scale = tk.Scale(
             zoom_face,
@@ -476,31 +503,13 @@ class CoverGui:
         )
         self.zoom_scale.pack(fill="x", expand=True, padx=2, pady=1)
         self.zoom_scale.bind("<ButtonRelease-1>", lambda _e: self._save_settings())
-        self.zoom_label = tk.Label(
-            zoom_row, text="100%", font=("Consolas", 9), fg=LCD_FG, bg=PANEL, width=5, anchor="e"
-        )
-        self.zoom_label.pack(side="right")
-        rotate_row = tk.Frame(parent, bg=PANEL)
-        rotate_row.pack(side="bottom", fill="x", padx=14, pady=(0, 4))
-        self._secondary_button(rotate_row, "Rotate 90°", self._rotate_photo).pack(side="left")
-        self.pdf_page_row = tk.Frame(rotate_row, bg=PANEL)
-        self._secondary_button(self.pdf_page_row, "◀", self._pdf_page_prev).pack(side="left")
-        self.pdf_page_label = tk.Label(
-            self.pdf_page_row, text="Page 1 / 1", font=("Consolas", 9), fg=LCD_FG, bg=PANEL, anchor="w"
-        )
-        self.pdf_page_label.pack(side="left", padx=6)
-        self._secondary_button(self.pdf_page_row, "▶", self._pdf_page_next).pack(side="left")
-        self.rotation_label = tk.Label(
-            rotate_row, text="0°", font=("Consolas", 9), fg=LCD_FG, bg=PANEL, width=5, anchor="e"
-        )
-        self.rotation_label.pack(side="right")
         _preview_shell, preview_face = self._inset_panel(
-            parent, fill="both", expand=True, padx=14, pady=(0, 8), face="#050403"
+            parent, fill="both", expand=True, padx=10, pady=(0, 4), face="#050403"
         )
         self.photo_canvas = tk.Canvas(
-            preview_face, bg="#050403", highlightthickness=0, width=240, height=160, cursor="fleur"
+            preview_face, bg="#050403", highlightthickness=0, width=360, height=280, cursor="fleur"
         )
-        self.photo_canvas.pack(fill="both", expand=True, padx=8, pady=8)
+        self.photo_canvas.pack(fill="both", expand=True, padx=4, pady=4)
         self.photo_canvas.bind("<Configure>", lambda _e: self._schedule_photo_preview())
         self.photo_canvas.bind("<Enter>", lambda _e: self.photo_canvas.focus_set())
         self.photo_canvas.bind("<ButtonPress-1>", self._on_photo_press)
@@ -517,15 +526,22 @@ class CoverGui:
         label: str,
         variable: tk.StringVar,
         browse: Callable[[], None],
+        *,
+        inline: bool = False,
         **pack,
     ) -> None:
         frame = tk.Frame(parent, bg=PANEL)
         opts: dict[str, object] = {"fill": "x", "padx": 14, "pady": (8, 12)}
         opts.update(pack)
         frame.pack(**opts)
-        tk.Label(frame, text=label, font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL, anchor="w").pack(fill="x")
+        caption = tk.Label(frame, text=label, font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL, anchor="w")
         line = tk.Frame(frame, bg=PANEL)
-        line.pack(fill="x", pady=(4, 0))
+        if inline:
+            caption.pack(side="left", padx=(0, 8))
+            line.pack(side="left", fill="x", expand=True)
+        else:
+            caption.pack(fill="x")
+            line.pack(fill="x", pady=(4, 0))
         entry = tk.Entry(
             line,
             textvariable=variable,
@@ -538,7 +554,7 @@ class CoverGui:
             highlightbackground=BORDER,
             highlightcolor=ACCENT,
         )
-        entry.pack(side="left", fill="x", expand=True, ipady=6)
+        entry.pack(side="left", fill="x", expand=True, ipady=4 if inline else 6)
         btn = self._secondary_button(line, "Browse", browse)
         btn.pack(side="left", padx=(8, 0))
 
@@ -606,6 +622,61 @@ class CoverGui:
             self._save_settings()
         self._schedule_photo_preview()
 
+    def _apply_project_inputs(self, fields: dict[str, str] | None) -> None:
+        output_text = self.output_var.get().strip()
+        output = Path(output_text) if output_text else None
+        stored = load_cover_inputs(output)
+        incoming = overlay_nonempty(load_cover_fields(output), fields_from_env(), fields or {})
+        if self._locked_job:
+            incoming["job_number"] = self._locked_job
+        same_folder = bool(
+            output_text
+            and self._settings_output
+            and Path(output_text).resolve() == Path(self._settings_output).resolve()
+        )
+        for name, var in self.field_vars.items():
+            if incoming.get(name):
+                var.set(incoming[name])
+            elif output_text and not same_folder:
+                var.set("")
+        font = incoming.get("font", "").strip()
+        if font:
+            self.book_font_var.set(normalize_cover_font(font))
+        tab = incoming.get("tab_title", "").strip()
+        if tab:
+            self._tab_title = tab
+        photo = stored.get("photo", "").strip()
+        if photo:
+            self.photo_var.set(photo)
+        elif output_text and not same_folder:
+            self.photo_var.set("")
+        if stored.get("text_mode") == "custom":
+            self.text_mode_var.set("custom")
+        custom_text = stored.get("custom_text", "")
+        if custom_text and hasattr(self, "custom_text"):
+            self.custom_text.delete("1.0", "end")
+            self.custom_text.insert("1.0", custom_text)
+        try:
+            if stored.get("photo_zoom"):
+                self._photo_zoom = max(1.0, min(4.0, float(stored["photo_zoom"])))
+            if stored.get("photo_pan_x"):
+                self._photo_pan_x = max(-1.0, min(1.0, float(stored["photo_pan_x"])))
+            if stored.get("photo_pan_y"):
+                self._photo_pan_y = max(-1.0, min(1.0, float(stored["photo_pan_y"])))
+            if stored.get("photo_rotation"):
+                self._photo_rotation = normalize_photo_rotation(stored.get("photo_rotation"))
+            if stored.get("photo_page"):
+                self._photo_page = max(1, int(float(stored["photo_page"])))
+        except (TypeError, ValueError):
+            pass
+        if hasattr(self, "zoom_var"):
+            self.zoom_var.set(self._photo_zoom * 100)
+            self.zoom_label.configure(text=f"{int(self._photo_zoom * 100)}%")
+        if hasattr(self, "rotation_label"):
+            self.rotation_label.configure(text=f"{self._photo_rotation}°")
+        if stored.get("preview_mode") == "page":
+            self.preview_mode_var.set("page")
+
     def _load_settings(self) -> None:
         path = default_settings_path()
         if not path.is_file():
@@ -616,6 +687,7 @@ class CoverGui:
             return
         if data.get("output"):
             self.output_var.set(str(data["output"]))
+            self._settings_output = str(data["output"]).strip()
         if data.get("photo"):
             self.photo_var.set(str(data["photo"]))
         try:
@@ -645,16 +717,28 @@ class CoverGui:
             self.custom_text.insert("1.0", custom_text)
         if data.get("font"):
             self.book_font_var.set(normalize_cover_font(data.get("font")))
+        for name, var in self.field_vars.items():
+            if data.get(name):
+                var.set(str(data[name]).strip())
+        if data.get("tab_title"):
+            self._tab_title = str(data["tab_title"]).strip()
         if data.get("preview_mode") == "page":
             self.preview_mode_var.set("page")
         self._sync_pdf_page_chrome()
         self._apply_preview_mode_chrome()
+        if not self._locked_output:
+            engine_out = last_engine_suite_output("Cover")
+            if engine_out is not None:
+                self.output_var.set(str(engine_out))
 
     def _save_settings(self) -> None:
         path = default_settings_path()
+        photo = self.photo_var.get().strip()
+        if Path(photo).name.casefold() == "elite_cover_photo.jpg":
+            photo = ""
         payload = {
             "output": self.output_var.get().strip(),
-            "photo": self.photo_var.get().strip(),
+            "photo": photo,
             "photo_zoom": self._photo_zoom,
             "photo_pan_x": self._photo_pan_x,
             "photo_pan_y": self._photo_pan_y,
@@ -664,8 +748,12 @@ class CoverGui:
             "custom_text": self._custom_text_value(),
             "font": normalize_cover_font(self.book_font_var.get()),
             "preview_mode": self.preview_mode_var.get().strip() or "photo",
+            "tab_title": self._tab_title,
         }
+        for name, var in self.field_vars.items():
+            payload[name] = var.get().strip()
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        save_cover_inputs(Path(self.output_var.get().strip()) if self.output_var.get().strip() else None, payload)
 
     def _on_font_changed(self) -> None:
         self._save_settings()
@@ -678,17 +766,6 @@ class CoverGui:
         canvas = getattr(self, "photo_canvas", None)
         if canvas is not None:
             canvas.configure(cursor="fleur" if self._preview_is_photo() else "")
-        hint = getattr(self, "preview_hint", None)
-        if hint is None:
-            return
-        if self._preview_is_photo():
-            hint.configure(
-                text="Preview is the real cover cutout - not a full circle. Drag to pan, scroll or use the slider to zoom, Rotate 90 to turn it. A PDF uses the chosen page the same way as a photo."
-            )
-        else:
-            hint.configure(
-                text="Letter page as it will print - text, branding, and photo. Switch to Photo crop to pan and zoom the circle."
-            )
 
     def _on_preview_mode_changed(self) -> None:
         self._apply_preview_mode_chrome()
@@ -702,12 +779,18 @@ class CoverGui:
                 "Output is the Databook Output Folder.\nChange it on Databook Home, then launch Cover Suite again.",
             )
             return
-        path = filedialog.askdirectory(title="Select output folder")
+        path = filedialog.askdirectory(
+            title="Select output folder",
+            initialdir=picker_start_dir(self.output_var.get().strip()),
+        )
         if path:
             self.output_var.set(path)
             self._save_settings()
 
     def _browse_photo(self) -> None:
+        photo = self.photo_var.get().strip()
+        if photo and Path(photo).name.casefold() == "elite_cover_photo.jpg":
+            photo = ""
         selected = filedialog.askopenfilename(
             title="Choose the circle photo or PDF",
             filetypes=[
@@ -716,6 +799,7 @@ class CoverGui:
                 ("PDF", "*.pdf"),
                 ("All files", "*.*"),
             ],
+            initialdir=picker_start_dir(photo, self.output_var.get().strip()),
         )
         if selected:
             self._photo_page = 1
@@ -752,7 +836,7 @@ class CoverGui:
         count = cover_source_page_count(source)
         self._photo_page = normalize_photo_page(self._photo_page, count)
         if not row.winfo_ismapped():
-            row.pack(side="left", padx=(12, 0))
+            row.pack(side="left", padx=(12, 0), after=self.rotation_label)
         if hasattr(self, "pdf_page_label"):
             self.pdf_page_label.configure(text=f"Page {self._photo_page} / {count}")
 
