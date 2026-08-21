@@ -123,12 +123,43 @@ class CoverGui:
 
     def _apply_startup_geometry(self) -> None:
         self.root.update_idletasks()
-        screen_w = max(self.root.winfo_screenwidth(), 1024)
-        screen_h = max(self.root.winfo_screenheight(), 720)
-        width = min(1100, max(920, screen_w - 100))
-        height = min(820, max(680, screen_h - 100))
-        self.root.geometry(f"{width}x{height}")
         self.root.minsize(880, 640)
+        leftover = {"n": 4}
+
+        def run() -> None:
+            if leftover["n"] <= 0:
+                return
+            leftover["n"] -= 1
+            try:
+                self.root.update_idletasks()
+                self.root.state("zoomed")
+            except tk.TclError:
+                leftover["n"] = 0
+                return
+            if leftover["n"] > 0:
+                self.root.after(80, run)
+
+        def on_map(event: tk.Event) -> None:  # type: ignore[type-arg]
+            if event.widget is not self.root:
+                return
+            bind_id = getattr(self.root, "_open_max_map", None)
+            if bind_id:
+                try:
+                    self.root.unbind("<Map>", bind_id)
+                except tk.TclError:
+                    pass
+                try:
+                    delattr(self.root, "_open_max_map")
+                except AttributeError:
+                    pass
+            run()
+
+        try:
+            setattr(self.root, "_open_max_map", self.root.bind("<Map>", on_map, add="+"))
+        except tk.TclError:
+            pass
+        self.root.after_idle(run)
+        self.root.after(80, run)
 
     def _inset_panel(
         self,
@@ -281,21 +312,41 @@ class CoverGui:
 
         body = tk.Frame(main, bg=BACKGROUND)
         body.pack(fill="both", expand=True, padx=28, pady=(0, 8))
-        body.grid_columnconfigure(0, weight=2)
-        body.grid_columnconfigure(1, weight=3)
-        body.grid_rowconfigure(0, weight=1)
+        split_pane = tk.PanedWindow(
+            body,
+            orient=tk.HORIZONTAL,
+            bg=BACKGROUND,
+            sashwidth=6,
+            sashrelief="flat",
+            bd=0,
+            opaqueresize=True,
+        )
+        split_pane.pack(fill="both", expand=True)
+        self._split_pane = split_pane
 
-        left_shell = tk.Frame(body, bg=ACCENT_DIM, highlightthickness=0)
-        left_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left_shell = tk.Frame(split_pane, bg=ACCENT_DIM, highlightthickness=0)
         left = tk.Frame(left_shell, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         left.pack(fill="both", expand=True, padx=(3, 0))
         self._build_fields_panel(left)
 
-        right_shell = tk.Frame(body, bg=ACCENT_DIM, highlightthickness=0)
-        right_shell.grid(row=0, column=1, sticky="nsew")
+        right_shell = tk.Frame(split_pane, bg=ACCENT_DIM, highlightthickness=0)
         right = tk.Frame(right_shell, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         right.pack(fill="both", expand=True, padx=(3, 0))
         self._build_photo_panel(right)
+
+        split_pane.add(left_shell, minsize=280, stretch="never")
+        split_pane.add(right_shell, minsize=320, stretch="always")
+        self.root.after(400, self._place_preview_sash)
+
+    def _place_preview_sash(self) -> None:
+        try:
+            pane = self._split_pane
+            pane.update_idletasks()
+            width = pane.winfo_width()
+            if width > 400:
+                pane.sash_place(0, max(280, int(width * 0.38)), 1)
+        except (tk.TclError, AttributeError):
+            pass
 
     def _build_fields_panel(self, parent: tk.Frame) -> None:
         tk.Label(
