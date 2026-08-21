@@ -5,5 +5,5 @@
 __all__ = ["APP_DISPLAY_NAME", "APP_RELEASE_DATE", "__version__"]
 
 APP_DISPLAY_NAME = "Elite Cover Suite"
-__version__ = "1.16"
-APP_RELEASE_DATE = "August 20, 2026"
+__version__ = "1.17"
+APP_RELEASE_DATE = "August 21, 2026"
