@@ -83,8 +83,20 @@ def last_suite_folder(*keys: str) -> Path | None:
     return None
 
 
+def last_add_pdfs_dir(*fallbacks: str | Path | None) -> str | None:
+    """Folder a picker should open in: last browse across the suite, then fallbacks."""
+    return picker_start_dir(*fallbacks)
+
+
 def picker_start_dir(*fallbacks: str | Path | None) -> str | None:
-    """Folder a file dialog should open in: explicit fallbacks, then Engine's last folders."""
+    """Folder a file dialog should open in.
+
+    Shared last browse (any of Engine / Cover / WELD) wins, then the caller’s
+    fallbacks, then the shared Output folder.
+    """
+    found = last_suite_folder("open")
+    if found is not None:
+        return str(found)
     for item in fallbacks:
         if item is None or not str(item).strip():
             continue
@@ -93,7 +105,7 @@ def picker_start_dir(*fallbacks: str | Path | None) -> str | None:
             path = path.parent
         if path.is_dir():
             return str(path)
-    found = last_suite_folder("open", "output")
+    found = last_suite_folder("output")
     return str(found) if found else None
 
 

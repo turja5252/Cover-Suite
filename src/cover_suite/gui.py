@@ -39,7 +39,7 @@ from cover_suite.project_inputs import (
     overlay_nonempty,
     save_cover_inputs,
 )
-from cover_suite.suite_folders import last_engine_suite_output, picker_start_dir
+from cover_suite.suite_folders import last_engine_suite_output, picker_start_dir, remember_suite_folders
 from cover_suite.ui_scale import install_ui_scaling, pack_font_size_toggle
 from cover_suite.widgets import styled_button
 
@@ -836,6 +836,7 @@ class CoverGui:
         )
         if path:
             self.output_var.set(path)
+            remember_suite_folders(output=path, open_dir=path)
             self._save_settings()
 
     def _browse_photo(self) -> None:
@@ -853,6 +854,7 @@ class CoverGui:
             initialdir=picker_start_dir(photo, self.output_var.get().strip()),
         )
         if selected:
+            remember_suite_folders(open_dir=selected)
             self._photo_page = 1
             self.photo_var.set(selected)
             self._reset_photo_view(log=False)
