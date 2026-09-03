@@ -419,13 +419,38 @@ class CoverGui:
         )
         self.text_body = tk.Frame(parent, bg=PANEL)
         self.text_body.pack(fill="both", expand=True)
-        self.fields_block = tk.Frame(self.text_body, bg=PANEL)
+
+        # Scrollable fields so all rows stay reachable at Large text size.
+        self._fields_canvas = fields_canvas = tk.Canvas(self.text_body, bg=PANEL, highlightthickness=0, borderwidth=0)
+        self._fields_scroll = fields_scroll = tk.Scrollbar(self.text_body, orient="vertical", command=fields_canvas.yview)
+        fields_canvas.configure(yscrollcommand=fields_scroll.set)
+
+        self.fields_block = tk.Frame(fields_canvas, bg=PANEL)
+        fields_win = fields_canvas.create_window((0, 0), window=self.fields_block, anchor="nw")
+
+        def _on_fields_configure(_event: object = None) -> None:
+            fields_canvas.configure(scrollregion=fields_canvas.bbox("all"))
+
+        def _on_canvas_resize(event: tk.Event) -> None:  # type: ignore[type-arg]
+            fields_canvas.itemconfigure(fields_win, width=event.width)
+
+        self.fields_block.bind("<Configure>", _on_fields_configure)
+        fields_canvas.bind("<Configure>", _on_canvas_resize)
+
+        def _on_fields_wheel(event: tk.Event) -> str:  # type: ignore[type-arg]
+            fields_canvas.yview_scroll(-1 if getattr(event, "delta", 0) > 0 else 1, "units")
+            return "break"
+
+        fields_canvas.bind("<MouseWheel>", _on_fields_wheel)
+        self.fields_block.bind("<MouseWheel>", _on_fields_wheel)
+
         for name, label in FIELD_ORDER:
             frame = tk.Frame(self.fields_block, bg=PANEL)
             frame.pack(fill="x", padx=14, pady=(0, 8))
             tk.Label(frame, text=label, font=("Segoe UI Semibold", 9), fg=MUTED, bg=PANEL, anchor="w").pack(fill="x")
             entry = self._entry(frame, self.field_vars[name], fill="x", ipady=5)
             entry.bind("<FocusOut>", lambda _e: self._save_settings())
+            entry.bind("<MouseWheel>", _on_fields_wheel)
         for var in self.field_vars.values():
             var.trace_add("write", lambda *_args: self._schedule_photo_preview())
         self.custom_block = tk.Frame(self.text_body, bg=PANEL)
@@ -473,7 +498,9 @@ class CoverGui:
         ).pack(fill="x")
         job_entry = self._entry(job_row, self.field_vars["job_number"], fill="x", ipady=5)
         job_entry.bind("<FocusOut>", lambda _e: self._save_settings())
-        self.fields_block.pack(fill="x")
+        # Initial pack: canvas + scrollbar side by side, filling available space.
+        self._fields_scroll.pack(side="right", fill="y")
+        self._fields_canvas.pack(side="left", fill="both", expand=True)
 
     def _build_photo_panel(self, parent: tk.Frame) -> None:
         header = tk.Frame(parent, bg=PANEL)
@@ -656,7 +683,8 @@ class CoverGui:
     def _apply_text_mode(self, *, persist: bool = True) -> None:
         custom = self.text_mode_var.get() == "custom"
         if custom:
-            self.fields_block.pack_forget()
+            self._fields_scroll.pack_forget()
+            self._fields_canvas.pack_forget()
             if not self._custom_text_value().strip():
                 self._fill_custom_from_fields(log=False)
             self.custom_block.pack(fill="both", expand=True)
@@ -665,7 +693,8 @@ class CoverGui:
             )
         else:
             self.custom_block.pack_forget()
-            self.fields_block.pack(fill="x")
+            self._fields_scroll.pack(side="right", fill="y")
+            self._fields_canvas.pack(side="left", fill="both", expand=True)
             self.fields_hint.configure(
                 text="Same fields as Databook Info. Empty fields leave a blank line. Revision is omitted if blank. Turnover Package is always printed."
             )
